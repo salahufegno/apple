@@ -1,156 +1,120 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:apple/fetchers/fetchers.dart';
 import 'package:apple/globals.dart';
-import 'package:process_run/shell.dart';
 
-// Function to handle parallel episode downloads
 Future<void> createEpisodesJson(
-  dynamic episode,
+  List<dynamic> episodes,
+  dynamic animeName,
+  bool skipFillers,
 ) async {
-  // final SendPort sendPort = params[1]; // SendPort for communication
+  final outputDir = Directory(animeFolder(animeName: animeName));
 
-  final episodeId = episode['episodeId'];
-  final episodeTitle = episode['title'];
-  final episodeNumber = episode['number'];
-  final progress = logger.progress('Fetching episode servers: $episodeNumber - $episodeTitle'); // Log episode start
-  var servers = [];
-  try {
-    servers = await fetchEpisodeServers(episodeId);
-    progress.update('Fetched episode servers: $episodeNumber - $episodeTitle');
-  } catch (e) {
-    progress.fail('Ep: $episodeNumber has $e');
-    return;
+  final creatingJsonProgress = logger.progress('Checking $outputDir Available...'); // Log episode start
+
+  var episodesData = <String, dynamic>{};
+
+  if (!await outputDir.exists()) {
+    creatingJsonProgress.update('Creating $outputDir'); // Log episode start
+    await outputDir.create(recursive: true);
   }
 
-  bool episodeDownloaded = false;
-  for (var server in servers) {
-    progress.update('Fetching episode "${server['serverName']}" server details : $episodeNumber - $episodeTitle');
-    final sourcesData = await fetchEpisodeServerDetails(episodeId, server['serverName']);
-    if (sourcesData.isNotEmpty) {
-      progress.update('Fetched episode "${server['serverName']}" server details : $episodeNumber - $episodeTitle');
-      final sources = sourcesData['sources'];
-      final m3u8Url = sources[0]['url'];
-      final intro = sourcesData['intro'];
-      final outro = sourcesData['outro'];
+  final jsonFilePath = animeJson(animeName: animeName, skipFillers: skipFillers);
 
-      if (intro != null && outro != null) {
-        final introEnd = intro['end'];
-        final outroStart = outro['start'];
-        // final outputFileBase = '/home/bliss/Videos/Naruto/${episode['number']} - ${episode['title']}';
-        final outputDir = Directory('/home/bliss/Videos/Naruto');
+  File jsonFile = File(jsonFilePath);
 
-        if (!await outputDir.exists()) {
-          await outputDir.create(recursive: true);
-        }
+  creatingJsonProgress.update('Checking ${jsonFile.path} Available...'); // Log episode start
 
-        final jsonFilePath = '${outputDir.path}/episode_data.json';
-        File jsonFile = File(jsonFilePath);
+  // Check if the file exists; if not, create it
+  if (!await jsonFile.exists()) {
+    creatingJsonProgress.update('Creating ${jsonFile.path} json file');
+    await jsonFile.create(recursive: true);
+    await jsonFile.writeAsString('{}'); // Initialize with an empty JSON object
+    creatingJsonProgress.update('Created ${jsonFile.path} json file.');
+  } else {
+    final overwrite = logger.confirm('\nDo you want overwrite data ?');
 
-        // Check if the file exists; if not, create it
-        if (!await jsonFile.exists()) {
-          progress.update('Creating json file');
-          await jsonFile.create(recursive: true);
-          await jsonFile.writeAsString('{}'); // Initialize with an empty JSON object
-          progress.update('Created new JSON file at: $jsonFilePath');
-        }
-        progress.update('Creating json data : $episodeNumber - $episodeTitle');
-        // Read the current data
-        final currentData = jsonDecode(await jsonFile.readAsString()) as Map<String, dynamic>;
-        currentData['$episodeNumber'] = {
-          'number': episodeNumber,
-          'title': episodeTitle,
-          'url': m3u8Url,
-          'start': introEnd,
-          'end': outroStart,
-        };
-        // Write back the updated data
-        await jsonFile.writeAsString(jsonEncode(currentData), flush: true);
-        // print('Saved episode data: ${jsonEncode(episodeData)} to $jsonFilePath');
-        progress.complete('Added json data : $episodeNumber - $episodeTitle');
+    if (!overwrite) {
+      episodesData = jsonDecode(await jsonFile.readAsString()) as Map<String, dynamic>;
+    }
 
-        // final segments = [
-        //   {'start': 0, 'end': introEnd, 'outputFile': '$outputFileBase-part1.mp4'},
-        //   {'start': outroStart, 'end': null, 'outputFile': '$outputFileBase-part2.mp4'}
-        // ];
+    // Read the current data
+  }
 
-        // await parallelDownload(segments, m3u8Url, 2); // Assuming maxParallel is 10
+  creatingJsonProgress.cancel();
 
-        // final shell = Shell();
-        // final finalOutputFile = '$outputFileBase-final.mp4';
-        // await shell.run('ffmpeg -f concat -safe 0 -i <(for f in $outputFileBase-part*.mp4; do echo "file \'\$f\'"; done) -c copy $finalOutputFile');
+  for (var episode in episodes) {
+    final episodeId = episode['episodeId'];
+    final episodeTitle = episode['title'];
+    final episodeNumber = episode['number'];
 
-        // progress.complete('Downloaded and merged episode: $episodeTitle'); // Log success
-        episodeDownloaded = true;
-        break;
+    final episodeProgress = logger.progress('Checking Already episode: $episodeNumber - $episodeTitle'); // Log episode start
+
+    if (episodesData.containsKey('$episodeNumber')) {
+      if (!episodesData['$episodeNumber']['has_error']) {
+        episodeProgress.complete('Already Available episode: $episodeNumber - $episodeTitle');
+        continue;
       }
     }
-  }
 
-  if (!episodeDownloaded) {
-    progress.fail('Failed creating data : $episodeNumber - $episodeTitle');
-  }
+    episodeProgress.update('Fetching episode servers: $episodeNumber - $episodeTitle'); // Log episode start
 
-  // sendPort.send('Episode Completed'); // Notify main isolate
-}
-
-Future<void> parallelDownload(
-  List<Map<String, dynamic>> segments,
-  String url,
-  int maxParallel,
-) async {
-  final receivePort = ReceivePort();
-  int activeDownloads = 0;
-
-  Future<void> spawnIsolate(
-    Map<String, dynamic> segment,
-  ) async {
-    if (activeDownloads < maxParallel) {
-      activeDownloads++;
-      await Isolate.spawn(
-        downloadSegment,
-        [url, segment['start'], segment['end'], segment['outputFile'], receivePort.sendPort],
-      );
+    var servers = [];
+    try {
+      servers = (await fetchEpisodeServers(episodeId)).where((e) {
+        return !(episodesData['$episodeNumber']['used_servers'] as List? ?? []).contains(e['serverName']);
+      }).toList();
+      episodeProgress.update('Fetched episode servers: $episodeNumber - $episodeTitle');
+    } catch (e) {
+      episodeProgress.fail('Ep: $episodeNumber has $e');
+      return;
     }
-  }
 
-  for (var segment in segments) {
-    await spawnIsolate(segment);
-  }
+    bool episodeDownloaded = false;
+    for (var server in servers) {
+      episodeProgress.update('Fetching episode "${server['serverName']}" server details : $episodeNumber - $episodeTitle');
+      final sourcesData = await fetchEpisodeServerDetails(episodeId, server['serverName']);
+      if (sourcesData.isNotEmpty) {
+        episodeProgress.update('Fetched episode "${server['serverName']}" server details : $episodeNumber - $episodeTitle');
+        final sources = sourcesData['sources'];
+        final m3u8Url = sources[0]['url'];
+        final intro = sourcesData['intro'];
+        final outro = sourcesData['outro'];
 
-  await for (var message in receivePort) {
-    if (message == 'Segment Completed') {
-      activeDownloads--;
-      if (segments.isNotEmpty) {
-        await spawnIsolate(segments.removeAt(0));
+        if (intro != null && outro != null) {
+          final introEnd = intro['end'];
+          final outroStart = outro['start'];
+
+          episodeProgress.update('Creating json data : $episodeNumber - $episodeTitle');
+
+          episodesData['$episodeNumber'] = {
+            'number': episodeNumber,
+            'title': episodeTitle,
+            'url': m3u8Url,
+            'start': introEnd,
+            'end': outroStart,
+            'used_servers': [...?episodesData['$episodeNumber']['used_servers'], server['serverName']],
+            'has_error': false,
+          };
+
+          episodeProgress.complete('Added json data : $episodeNumber - $episodeTitle');
+          episodeDownloaded = true;
+          break;
+        }
       }
     }
-    if (segments.isEmpty && activeDownloads == 0) {
-      break;
+
+    if (!episodeDownloaded) {
+      episodeProgress.fail('Failed creating data : $episodeNumber - $episodeTitle');
     }
   }
 
-  receivePort.close();
-}
+  await jsonFile.writeAsString(jsonEncode(episodesData), flush: true);
 
-Future<void> downloadSegment(List<dynamic> params) async {
-  final String url = params[0];
-  final int start = params[1];
-  final int end = params[2];
-  final String outputFile = params[3];
-  final SendPort sendPort = params[4];
-
-  final shell = Shell();
-  final command = 'ffmpeg -i $url -ss $start -to $end -movflags +faststart -c copy $outputFile';
-
-  try {
-    await shell.run(command);
-    sendPort.send('Segment Completed');
-  } catch (e) {
-    logger.err('Failed to download segment: $e'); // Log failure
-    logger.err('Failed to download segment: $outputFile'); // Log failure
-    sendPort.send('Segment Failed');
+  if (episodes.length == episodesData.entries.length) {
+    creatingJsonProgress.complete('Successfully write ${episodesData.entries.length}/${episodes.length} data!'); // Log episode start
+  } else {
+    creatingJsonProgress.fail('Only Wrote ${episodesData.entries.length}/${episodes.length} data!'); // Log episode start
   }
 }
