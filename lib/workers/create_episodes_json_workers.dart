@@ -62,15 +62,21 @@ Future<void> createEpisodesJson(
 
     var servers = [];
     try {
-      servers = (await fetchEpisodeServers(episodeId)).where((e) {
-        return !(episodesData['$episodeNumber']['used_servers'] as List? ?? []).contains(e['serverName']);
-      }).toList();
+      servers = (await fetchEpisodeServers(episodeId));
+      // if (episodesData.isNotEmpty) {
+        // if (episodesData['$episodeNumber'].isNotEmpty) {
+        //   if (episodesData['$episodeNumber'].containsKey('used_servers')) {
+        //     servers = servers.where((e) {
+        //       return !(episodesData['$episodeNumber']['used_servers'] as List? ?? []).contains(e['serverName']);
+        //     }).toList();
+        //   }
+        // }
+      // }
       episodeProgress.update('Fetched episode servers: $episodeNumber - $episodeTitle');
     } catch (e) {
       episodeProgress.fail('Ep: $episodeNumber has $e');
       return;
     }
-
     bool episodeDownloaded = false;
     for (var server in servers) {
       episodeProgress.update('Fetching episode "${server['serverName']}" server details : $episodeNumber - $episodeTitle');
@@ -94,7 +100,12 @@ Future<void> createEpisodesJson(
             'url': m3u8Url,
             'start': introEnd,
             'end': outroStart,
-            'used_servers': [...?episodesData['$episodeNumber']['used_servers'], server['serverName']],
+            'used_servers': [
+              if (episodesData.isNotEmpty)
+                if (episodesData['$episodeNumber'].isNotEmpty)
+                  if (episodesData['$episodeNumber'].containsKey('used_servers')) ...?episodesData['$episodeNumber']['used_servers'],
+              server['serverName'],
+            ],
             'has_error': false,
           };
 
